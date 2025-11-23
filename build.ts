@@ -31,7 +31,7 @@ async function main() {
         return "";
     });
 
-    const replaced = aboutXml.replace("DESCRIPTION", readme).replace("MOD_VERSION", tag);
+    const replaced = aboutXml.replace("MOD_VERSION", tag).replace("DESCRIPTION", readme);
     await fs.writeFile(aboutXmlPath, replaced, "utf8");
 
     console.log("Used version:", tag);
