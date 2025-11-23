@@ -44,6 +44,6 @@ bun run build.ts
 If you don't have Bun, you can manually build:
 ```bash
 dotnet build /p:DebugType=None /p:DebugSymbols=false
-cp ./about/ dist/About/ -r 
+cp ./about/ ./dist/About/ -r 
 ```
 Then you need modify `dist/About/About.xml` to set your mod info (like `DESCRIPTION`, `MOD_VERSION`).
