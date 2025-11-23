@@ -96,7 +96,6 @@ namespace RimWorldHotReload
 			Log.Message("======================");
 
 			Task.Run(() => HotReloadServer.HandleHttpRequestLoop());
-			Log.Message("======================");
 			
 			// run background accept loop
 			var dispatcher = new GameObject();
@@ -201,7 +200,7 @@ namespace RimWorldHotReload
 						// map mod names to HotReloadApp
 						foreach (var modName in request.mods)
 						{
-							var mod = HotReloadCore.mods.FirstOrDefault(m => m.modContentPack.Name.Equals(modName, StringComparison.OrdinalIgnoreCase));
+							var mod = HotReloadCore.mods.FirstOrDefault(m => m.modContentPack.PackageId.Equals(modName, StringComparison.OrdinalIgnoreCase));
 							if (mod != null)
 							{
 								mods.Add(mod);

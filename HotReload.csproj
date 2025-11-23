@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputPath>../dist</OutputPath>
+    <OutputPath>dist/Assemblies</OutputPath>
     <TargetFramework>net472</TargetFramework>
     <AssemblyTitle>Diet Filters In Storage</AssemblyTitle>
     <AssemblyVersion>2024.0721.1</AssemblyVersion>
