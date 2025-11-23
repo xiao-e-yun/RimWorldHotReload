@@ -5,12 +5,12 @@ using System.Text;
 using System.Reflection;
 using System.Collections;
 using System.Collections.Generic;
-using System.Threading.Tasks;
-using PimDeWitte.UnityMainThreadDispatcher;
 using Verse;
 using UnityEngine;
 using System.Linq;
 using LudeonTK;
+using System.Timers;
+using System.Threading.Tasks;
 
 
 namespace RimWorldHotReload
@@ -20,16 +20,13 @@ namespace RimWorldHotReload
 	{
 		public static List<HotReloadApp> mods = [];
 
-		private static HotReloadServer server = null;
-		private static FileSystemWatcher watcher = null;
-
 		static HotReloadCore()
 		{
 			// Trigger play data reload
 			foreach (var mod in LoadedModManager.RunningMods)
 			{
 				var path = mod.RootDir;
-				var configPath = Path.Combine(path, "rimworldHotReload.json");
+				var configPath = Path.Combine(path, "hotReload.json");
 				if (!File.Exists(configPath)) continue;
 
 				HotReloadConfig config = null;
@@ -41,7 +38,7 @@ namespace RimWorldHotReload
 				}
 				catch (Exception ex)
 				{
-					Log.Error("[HotReload] Failed to read rimworldHotReload.json: " + ex);
+					Log.Error("[HotReload] Failed to read hotReload.json: " + ex);
 					continue;
 				}
 
@@ -56,52 +53,54 @@ namespace RimWorldHotReload
 			{
 				Log.Message("======================");
 				Log.Message("* RimWorld Hot Reload *");
-				Log.Warning("No mods with rimworldHotReload.json found, not starting server.");
-				Log.Warning("Create a rimworldHotReload.json file in your mod folder to enable hot reload.");
-				Log.Warning("Example content:");
+				Log.Message("No mods with hotReload.json found, not starting server.");
+				Log.Message("Create a hotReload.json file in your mod folder to enable hot reload.");
+				Log.Message("Example content:");
 				Log.Message("{");
 				Log.Message("  \"enabled\": false,");
 				Log.Message("  \"assets\": true,");
-				Log.Message("  \"defs\": true");
-				Log.Message("  \"watch\": true");
+				Log.Message("  \"defs\": true,");
+				Log.Message("  \"watch\": true,");
 				Log.Message("  \"api\": false");
 				Log.Message("}");
-				Log.Warning("`enabled`: Enable hot reload for this mod.");
-				Log.Warning("`assets`: Enable asset hot reload for this mod. (default true)");
-				Log.Warning("`defs`: Enable def hot reload for this mod. (default true)");
-				Log.Warning("`watch`: Enable file watch and auto reload for this mod. (default true)");
-				Log.Warning("`api`: Enable API for this mod. (default false)");
+				Log.Message("`enabled`: Enable hot reload for this mod.");
+				Log.Message("`assets`: Enable asset hot reload for this mod. (default true)");
+				Log.Message("`defs`: Enable def hot reload for this mod. (default true)");
+				Log.Message("`watch`: Enable file watch and auto reload for this mod. (default true)");
+				Log.Message("`api`: Enable API for this mod. (default false)");
 				Log.Message("Made by xiaoeyun's RimWorld Hot Reload");
 				Log.Message("======================");
 				return;
 			}
 
 			// try start HTTP listener
-			if (mods.Any(m => m.config.api)) server = new HotReloadServer();
+			if (mods.Any(m => m.config.api)) HotReloadServer.Init();
+			// start file watchers for mods that have watch enabled
+			if (mods.Any(m => m.config.watch)) HotReloadWatcher.Init(mods);
 
 			// Print startup banner to in-game log
 			Log.Message("======================");
 			Log.Message("* RimWorld Hot Reload *");
 			Log.Message("Mods: " + string.Join(", ", mods.Select(m => m.modContentPack.Name)));
 			Log.Message("Manual trigger: Debug Actions -> Mods -> Hot Reload");
-			if (server != null)
+			if (HotReloadServer.listener != null)
 			{
 				Log.Message("Web trigger: GET http://localhost:8700/");
 				Log.Message("API trigger: POST http://localhost:8700/hot-reload");
 			}
-			if (watcher != null)
+			if (HotReloadWatcher.watchers != null)
 			{
 				Log.Message("Auto reload: Enabled");
 			}
 			Log.Message("Made by xiaoeyun's RimWorld Hot Reload");
 			Log.Message("======================");
 
-
+			Task.Run(() => HotReloadServer.HandleHttpRequestLoop());
+			Log.Message("======================");
+			
 			// run background accept loop
 			var dispatcher = new GameObject();
 			dispatcher.AddComponent<UnityMainThreadDispatcher>();
-
-			Task.Run(server.HandleHttpRequestLoop);
 		}
 
 
@@ -140,14 +139,14 @@ namespace RimWorldHotReload
 		}
 	}
 
-	public class HotReloadServer
+	public static class HotReloadServer
 	{
 		private const string UrlPrefix = "http://localhost:8700/";
-		private HttpListener listener;
+		public static HttpListener listener;
 
-		public HotReloadServer()
+		public static void Init()
 		{
-
+			
 			try
 			{
 				listener = new HttpListener();
@@ -161,7 +160,7 @@ namespace RimWorldHotReload
 			}
 		}
 
-		public async Task HandleHttpRequestLoop()
+		public static async Task HandleHttpRequestLoop()
 		{
 			while (listener != null && listener.IsListening)
 			{
@@ -170,7 +169,7 @@ namespace RimWorldHotReload
 			}
 		}
 
-		private void HandleContext(HttpListenerContext ctx)
+		private static void HandleContext(HttpListenerContext ctx)
 		{
 			var req = ctx.Request;
 			var res = ctx.Response;
@@ -246,9 +245,102 @@ namespace RimWorldHotReload
 
 	}
 
-	public class HotReloadWatcher
-    {
-    }
+	public static class HotReloadWatcher
+	{
+		public static List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
+		private static HashSet<HotReloadApp> pendingMods = new HashSet<HotReloadApp>();
+		private static object @lock = new object();
+		private static Timer debounceTimer;
+
+		public static void Init(List<HotReloadApp> mods)
+		{
+			debounceTimer = new System.Timers.Timer(500);
+			debounceTimer.AutoReset = false;
+			debounceTimer.Elapsed += DebounceTimer_Elapsed;
+
+			foreach (var mod in mods)
+			{
+				if (mod.config.watch == false) continue;
+
+				try
+				{
+					var path = mod.modContentPack.RootDir;
+					var fsw = new FileSystemWatcher(path)
+					{
+						IncludeSubdirectories = true,
+						NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.DirectoryName | NotifyFilters.Size,
+						Filter = "*.*"
+					};
+
+					fsw.Changed += (s, e) => OnChanged(e.FullPath, mod);
+					fsw.Created += (s, e) => OnChanged(e.FullPath, mod);
+					fsw.Renamed += (s, e) => OnChanged(e.FullPath, mod);
+					fsw.Deleted += (s, e) => OnChanged(e.FullPath, mod);
+					fsw.EnableRaisingEvents = true;
+
+					watchers.Add(fsw);
+				}
+				catch (Exception ex)
+				{
+					Log.Warning("[HotReload] Failed to watch mod folder: " + mod.modContentPack.Name + " - " + ex);
+				}
+			}
+		}
+
+		private static void OnChanged(string fullPath, HotReloadApp mod)
+		{
+			lock (@lock)
+			{
+				pendingMods.Add(mod);
+				debounceTimer.Stop();
+				debounceTimer.Start();
+			}
+		}
+
+		private static void DebounceTimer_Elapsed(object sender, ElapsedEventArgs e)
+		{
+			List<HotReloadApp> toReload;
+			lock (@lock)
+			{
+				toReload = pendingMods.ToList();
+				pendingMods.Clear();
+			}
+
+			if (toReload.Count == 0) return;
+
+			Log.Message("[HotReload] File changes detected. Triggering reload for: " + string.Join(", ", toReload.Select(m => m.modContentPack.Name)));
+			try
+			{
+				UnityMainThreadDispatcher.Instance().Enqueue(() => HotReloadCore.ReloadMods(toReload));
+			}
+			catch (Exception ex)
+			{
+				Log.Error("[HotReload] Failed to enqueue reload: " + ex);
+			}
+		}
+
+		public static void Stop()
+		{
+			try
+			{
+				debounceTimer?.Stop();
+				debounceTimer?.Dispose();
+			}
+			catch { }
+
+			foreach (var w in watchers)
+			{
+				try
+				{
+					w.EnableRaisingEvents = false;
+					w.Dispose();
+				}
+				catch { }
+			}
+
+			watchers.Clear();
+		}
+	}
 
 	[System.Serializable]
 	public class HotReloadConfig
@@ -270,11 +362,7 @@ namespace RimWorldHotReload
 	{
 		public List<string> mods;
 	}
-}
 
-// Utils
-namespace PimDeWitte.UnityMainThreadDispatcher
-{
 	/// Author: Pim de Witte (pimdewitte.com) and contributors, https://github.com/PimDeWitte/UnityMainThreadDispatcher
 	/// <summary>
 	/// A thread-safe class which holds a queue with actions to execute on the next Update() method. It can be used to make calls to the main thread for
