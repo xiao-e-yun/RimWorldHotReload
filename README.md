@@ -34,7 +34,7 @@ Supports Call Methods:
 5. Start RimWorld, you can open console to check more info.
 
 ## For Developers:
-[Github Repository](https://github.com/xiao-e-yun/RimWorldHotReload)
+[Github Repository](https://github.com/xiao-e-yun/RimWorldHotReload). 
 Requries [Bun](https://bun.sh/), [Git](https://git-scm.com/).
 
 You can use the script to build the mod:
